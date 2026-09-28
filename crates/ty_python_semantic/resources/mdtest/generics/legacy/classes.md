@@ -4069,5 +4069,26 @@ def narrow_intersection_bounded(value: Intersection[Parent[BoundedS], Other[Boun
         reveal_type(value)  # revealed: ChildBoth[BoundedS@narrow_intersection_bounded]
 ```
 
+## Unannotated defaults inherit instance annotations
+
+```py
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+class Base(Generic[T]):
+    def __init__(self) -> None:
+        self.items: list[T] = []
+
+class Child(Base[int]):
+    items = []
+
+reveal_type(Child.items)  # revealed: list[int]
+reveal_type(Child().items)  # revealed: list[int]
+
+class Invalid(Base[int]):
+    items = ["wrong"]  # error: [invalid-assignment]
+```
+
 [crtp]: https://en.wikipedia.org/wiki/Curiously_recurring_template_pattern
 [f-bound]: https://en.wikipedia.org/wiki/Bounded_quantification#F-bounded_quantification
