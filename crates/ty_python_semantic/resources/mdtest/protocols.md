@@ -7692,7 +7692,7 @@ def extract[U](node: Node[U]) -> U:
 
 # The structural solution includes both `value`'s `Literal[1]` and `child`'s `str`.
 # Intersecting it with the inherited `Node[object]` solution preserves that precision.
-reveal_type(extract(Mismatched(1)))  # revealed: str | Literal[1]
+reveal_type(extract(Mismatched(1)))  # revealed: Literal[1] | str
 ```
 
 ### Recursive legacy generic protocol
