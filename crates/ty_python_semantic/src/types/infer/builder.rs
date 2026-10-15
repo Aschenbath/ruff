@@ -3179,7 +3179,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             | Type::LiteralValue(..)
             | Type::SpecialForm(..)
             | Type::ClassLiteral(..)
-            | Type::GenericAlias(..)
+            | Type::SpecializedClass(..)
             | Type::SubclassOf(..)
             | Type::KnownInstance(..)
             | Type::PropertyInstance(..)
@@ -5670,7 +5670,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 | Type::DataclassTransformer(_)
                 | Type::ModuleLiteral(_)
                 | Type::ClassLiteral(_)
-                | Type::GenericAlias(_)
+                | Type::SpecializedClass(_)
                 | Type::SubclassOf(_)
                 | Type::NominalInstance(_)
                 | Type::ProtocolInstance(_)
@@ -7066,7 +7066,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 {
                     alias
                 }
-                Type::GenericAlias(alias) => alias,
+                Type::SpecializedClass(alias) => alias,
                 _ => return None,
             };
 
@@ -7088,7 +7088,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         };
 
         class_type
-            .map(Type::GenericAlias)
+            .map(Type::SpecializedClass)
             .filter(|class_type| !class_type.has_provisional_marker(db, env))
             .unwrap_or(ty)
     }
@@ -9506,7 +9506,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         let class = match callable_type {
             Type::ClassLiteral(class) => Some(ClassType::NonGeneric(class)),
-            Type::GenericAlias(generic) => Some(ClassType::Generic(generic)),
+            Type::SpecializedClass(generic) => Some(ClassType::Generic(generic)),
             Type::SubclassOf(subclass) => subclass.subclass_of().into_class(db, env),
             _ => None,
         };
@@ -11292,7 +11292,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                             "Class `{}` has no attribute `{attr_name}`",
                             class.name(db),
                         )),
-                        Type::GenericAlias(alias) => builder.into_diagnostic(format_args!(
+                        Type::SpecializedClass(alias) => builder.into_diagnostic(format_args!(
                             "Class `{}` has no attribute `{attr_name}`",
                             alias.display(db, env),
                         )),
@@ -11787,7 +11787,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 | Type::BoundMethod(_)
                 | Type::ModuleLiteral(_)
                 | Type::ClassLiteral(_)
-                | Type::GenericAlias(_)
+                | Type::SpecializedClass(_)
                 | Type::SubclassOf(_)
                 | Type::NominalInstance(_)
                 | Type::ProtocolInstance(_)
