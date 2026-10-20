@@ -49,17 +49,24 @@
 
 use std::borrow::Cow;
 
+use ruff_python_trivia::Cursor;
 use ruff_text_size::{Ranged, TextSize};
 
 use crate::docstring::document::syntax::BacktickScanner;
 
 /// Exposes an interface for rendering a line of prose that may contain a hyperlink.
-#[derive(Default)]
-pub(super) struct Renderer {
+pub(super) struct Renderer<'tags> {
     pending_link: Option<PendingLink>,
+    allowed_html_tags: &'tags [String],
 }
 
-impl Renderer {
+impl<'tags> Renderer<'tags> {
+    pub(super) fn new(allowed_html_tags: &'tags [String]) -> Self {
+        Self {
+            pending_link: None,
+            allowed_html_tags,
+        }
+    }
     /// Renders a prose line, buffering a supported wrapped hyperlink when necessary.
     pub(super) fn render_line(&mut self, output: &mut String, line: Line<'_>) {
         if let Some(pending_link) = self.pending_link.take() {
@@ -77,7 +84,7 @@ impl Renderer {
     ) {
         self.flush_pending_link(output);
         output.push_str(line.rendered_prefix);
-        render_inline_text(output, line.text);
+        render_inline_text(output, line.text, self.allowed_html_tags);
     }
 
     /// Returns whether a wrapped hyperlink candidate is buffered.
@@ -120,7 +127,7 @@ impl Renderer {
         // Buffer ordinary continuation lines without reparsing the entire
         // source, which would make long wrapped links increasingly expensive.
         if !line.text.contains(['`', '\\']) {
-            pending_link.push_fallback_line(line);
+            pending_link.push_fallback_line(line, self.allowed_html_tags);
             self.pending_link = Some(pending_link);
             return;
         }
@@ -141,7 +148,7 @@ impl Renderer {
             Some(Candidate::Pending) => {
                 // Keep the parsed source and fallback rendering in sync while
                 // the candidate remains unresolved.
-                pending_link.push_fallback_line(line);
+                pending_link.push_fallback_line(line, self.allowed_html_tags);
                 self.pending_link = Some(pending_link);
             }
             Some(Candidate::Complete(_)) | None => {
@@ -162,7 +169,7 @@ impl Renderer {
                 Some((start, Candidate::Complete(link))) => {
                     output.push_str(prefix);
                     prefix = "";
-                    render_inline_text(output, &rest[..start]);
+                    render_inline_text(output, &rest[..start], self.allowed_html_tags);
                     link.render_markdown(output);
                     rest = &rest[start + link.len..];
                 }
@@ -172,12 +179,13 @@ impl Renderer {
                         rest,
                         start,
                         line.source_indentation,
+                        self.allowed_html_tags,
                     ));
                     return;
                 }
                 None => {
                     output.push_str(prefix);
-                    render_inline_text(output, rest);
+                    render_inline_text(output, rest, self.allowed_html_tags);
                     return;
                 }
             }
@@ -220,14 +228,19 @@ impl PendingLink {
         line: &str,
         candidate_start: usize,
         minimum_indentation: usize,
+        allowed_html_tags: &[String],
     ) -> Self {
         let mut rendered_before = String::with_capacity(rendered_prefix.len() + candidate_start);
         rendered_before.push_str(rendered_prefix);
-        render_inline_text(&mut rendered_before, &line[..candidate_start]);
+        render_inline_text(
+            &mut rendered_before,
+            &line[..candidate_start],
+            allowed_html_tags,
+        );
 
         let mut fallback = String::with_capacity(rendered_prefix.len() + line.len());
         fallback.push_str(rendered_prefix);
-        render_inline_text(&mut fallback, line);
+        render_inline_text(&mut fallback, line, allowed_html_tags);
 
         let source = line[candidate_start..].to_owned();
         Self {
@@ -262,9 +275,9 @@ impl PendingLink {
     }
 
     /// Adds `line` to the speculative rendering used if conversion is abandoned.
-    fn push_fallback_line(&mut self, line: Line<'_>) {
+    fn push_fallback_line(&mut self, line: Line<'_>, allowed_html_tags: &[String]) {
         self.fallback.push_str(line.rendered_prefix);
-        render_inline_text(&mut self.fallback, line.text);
+        render_inline_text(&mut self.fallback, line.text, allowed_html_tags);
     }
 }
 
@@ -534,7 +547,7 @@ fn render_markdown_link(output: &mut String, label: Option<&str>, uri: &str) {
 /// we only have to detect one type of code span.
 ///
 /// Inline code is assumed not to span lines.
-fn render_inline_text(output: &mut String, text: &str) {
+fn render_inline_text(output: &mut String, text: &str, allowed_html_tags: &[String]) {
     let mut in_inline_code = false;
     let mut first_chunk = true;
     let mut opening_tick_count = 0;
@@ -544,7 +557,7 @@ fn render_inline_text(output: &mut String, text: &str) {
         // First chunk is definitionally not in inline-code and so always plaintext.
         if first_chunk {
             first_chunk = false;
-            push_escaped_markdown_text(output, chunk);
+            render_prose(output, chunk, allowed_html_tags);
             continue;
         }
 
@@ -586,23 +599,154 @@ fn render_inline_text(output: &mut String, text: &str) {
         if in_inline_code {
             output.push_str(chunk);
         } else {
-            push_escaped_markdown_text(output, chunk);
+            render_prose(output, chunk, allowed_html_tags);
         }
     }
     // NOTE: explicitly not "flushing" the ticks here.
     // We respect however the user closed their inline code.
 }
 
-fn push_escaped_markdown_text(output: &mut String, input: &str) {
-    for char in input.chars() {
+fn render_prose(output: &mut String, input: &str, allowed_html_tags: &[String]) {
+    for token in HtmlTagScanner::new(input, allowed_html_tags) {
+        match token {
+            HtmlToken::Tag(tag) => output.push_str(tag),
+            HtmlToken::Text(text) => push_escaped_text(output, text, !allowed_html_tags.is_empty()),
+        }
+    }
+}
+
+fn push_escaped_text(output: &mut String, text: &str, use_html_entities: bool) {
+    for char in text.chars() {
         match char {
             '&' => output.push_str("&amp;"),
             '<' => output.push_str("&lt;"),
             '>' => output.push_str("&gt;"),
+            '_' if use_html_entities => {
+                // An odd number of backslashes would escape the entity's `&` in Markdown.
+                let backslashes = output.len() - output.trim_end_matches('\\').len();
+                if backslashes % 2 == 1 {
+                    output.pop();
+                    output.push_str("&#92;");
+                }
+
+                // In an HTML block, `\_` is displayed literally, while `&#95;` renders as `_`.
+                output.push_str("&#95;");
+            }
             '_' => output.push_str("\\_"),
             _ => output.push(char),
         }
     }
+}
+
+/// Splits prose into text and HTML tags supported by the client.
+struct HtmlTagScanner<'a> {
+    cursor: Cursor<'a>,
+    allowed_html_tags: &'a [String],
+    pending_tag: Option<&'a str>,
+}
+
+impl<'a> HtmlTagScanner<'a> {
+    fn new(input: &'a str, allowed_html_tags: &'a [String]) -> Self {
+        Self {
+            cursor: Cursor::new(input),
+            allowed_html_tags,
+            pending_tag: None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HtmlToken<'a> {
+    Text(&'a str),
+    Tag(&'a str),
+}
+
+impl<'a> Iterator for HtmlTagScanner<'a> {
+    type Item = HtmlToken<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(tag) = self.pending_tag.take() {
+            return Some(HtmlToken::Tag(tag));
+        }
+
+        let text = self.cursor.as_str();
+        while !self.cursor.is_eof() {
+            let remaining = self.cursor.as_str();
+            if self.cursor.first() == '<'
+                && let Some(tag) =
+                    consume_supported_html_tag(&mut self.cursor, self.allowed_html_tags)
+            {
+                let preceding_len = text.len() - remaining.len();
+                if preceding_len == 0 {
+                    return Some(HtmlToken::Tag(tag));
+                }
+                self.pending_tag = Some(tag);
+                return Some(HtmlToken::Text(&text[..preceding_len]));
+            }
+            self.cursor.bump();
+        }
+
+        (!text.is_empty()).then_some(HtmlToken::Text(text))
+    }
+}
+
+/// Consumes and returns a supported tag, or returns `None` without advancing.
+fn consume_supported_html_tag<'a>(
+    cursor: &mut Cursor<'a>,
+    allowed_html_tags: &[String],
+) -> Option<&'a str> {
+    let input = cursor.as_str();
+    let mut lookahead = cursor.clone();
+    consume_starting_html_tag(&mut lookahead, allowed_html_tags)?;
+    consume_ending_html_tag(&mut lookahead)?;
+    let tag = &input[..input.len() - lookahead.as_str().len()];
+    *cursor = lookahead;
+    Some(tag)
+}
+
+/// Consumes the `<name` or `</name` beginning of a supported tag.
+fn consume_starting_html_tag(cursor: &mut Cursor<'_>, allowed_html_tags: &[String]) -> Option<()> {
+    if !cursor.eat_char('<') {
+        return None;
+    }
+    cursor.eat_char('/');
+    let remaining = cursor.as_str();
+    if !cursor.first().is_ascii_alphabetic() {
+        return None;
+    }
+    cursor.eat_while(|char| char.is_ascii_alphanumeric() || char == '-');
+    let name = &remaining[..remaining.len() - cursor.as_str().len()];
+    if !allowed_html_tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case(name))
+    {
+        return None;
+    }
+    if !matches!(cursor.first(), '>' | '/' | ' ' | '\t') {
+        return None;
+    }
+
+    Some(())
+}
+
+/// Consumes the rest of a tag, through its closing `>`.
+fn consume_ending_html_tag(cursor: &mut Cursor<'_>) -> Option<()> {
+    while let Some(char) = cursor.bump() {
+        match char {
+            // Stop at the next tag candidate so malformed tags do not cause repeated scans.
+            '<' => return None,
+            '\'' | '"' => {
+                cursor.eat_while(|next| next != char && next != '<');
+                if !cursor.eat_char(char) {
+                    return None;
+                }
+            }
+            '>' => return Some(()),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn push_link_label(output: &mut String, input: &str) {
@@ -651,6 +795,45 @@ fn push_link_destination(output: &mut String, input: &str) {
 #[cfg(test)]
 mod tests {
     use super::render_inline_text;
+
+    #[test]
+    fn preserves_html_tags_supported_by_the_client() {
+        let allowed_tags = ["p", "a", "br", "script", "my-widget", "1widget"].map(str::to_string);
+        for (input, expected) in [
+            ("<P>hello<br /></P>", "<P>hello<br /></P>"),
+            ("<my-widget>text</my-widget>", "<my-widget>text</my-widget>"),
+            (
+                "<1widget>text</1widget>",
+                "&lt;1widget&gt;text&lt;/1widget&gt;",
+            ),
+            ("<p>file_name</p>", "<p>file&#95;name</p>"),
+            (r"C:\\_private", r"C:\\&#95;private"),
+            (r"C:\\\_private", r"C:\\&#92;&#95;private"),
+            (
+                r#"<a href="?a_b&x" title='café > tea' id=x>link</a>"#,
+                r#"<a href="?a_b&x" title='café > tea' id=x>link</a>"#,
+            ),
+            (
+                "<b>text</b> <script>text</script>",
+                "&lt;b&gt;text&lt;/b&gt; <script>text</script>",
+            ),
+            ("<scheme>://<path>", "&lt;scheme&gt;://&lt;path&gt;"),
+            ("<p=placeholder>", "&lt;p=placeholder&gt;"),
+            (
+                "<p extra <script>> <a href=\"unterminated>",
+                "&lt;p extra <script>&gt; &lt;a href=\"unterminated&gt;",
+            ),
+            (
+                "<a title='broken <p>text</p>",
+                "&lt;a title='broken <p>text</p>",
+            ),
+            ("`<p>_literal_</p>`", "`<p>_literal_</p>`"),
+        ] {
+            let mut output = String::new();
+            render_inline_text(&mut output, input, &allowed_tags);
+            assert_eq!(output, expected, "{input:?}");
+        }
+    }
 
     #[test]
     fn renders_supported_single_line_links() {
@@ -878,13 +1061,13 @@ localization
 
     fn render_docstring(source: &str) -> String {
         let mut output = String::new();
-        super::super::render_into(&mut output, source);
+        super::super::render_into(&mut output, source, &[]);
         output
     }
 
     fn render_fragment(source: &str) -> String {
         let mut output = String::new();
-        super::super::render_fragment_into(&mut output, source);
+        super::super::render_fragment_into(&mut output, source, &[]);
         output
     }
 
@@ -900,7 +1083,7 @@ localization
             for _ in 0..line.len() - text.len() {
                 output.push_str("&nbsp;");
             }
-            render_inline_text(&mut output, text);
+            render_inline_text(&mut output, text, &[]);
         }
         output
     }
