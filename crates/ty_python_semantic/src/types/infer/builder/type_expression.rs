@@ -12,7 +12,6 @@ use ruff_text_size::{Ranged, TextRange};
 
 use super::{DeferredExpressionState, TypeInferenceBuilder};
 use crate::types::call::CallArguments;
-use crate::types::dedicated::numpy;
 use crate::types::definition_resolution::{ImportAliasResolution, resolve_definition};
 use crate::types::diagnostic::{
     self, CYCLIC_TYPE_ALIAS_DEFINITION, EXPERIMENTAL_SYNTAX, INVALID_INIT_TYPE_VARIABLE,
@@ -45,7 +44,7 @@ use crate::{FxOrderSet, SemanticModel, add_inferred_python_version_hint_to_diagn
 
 /// Type expressions
 impl<'db> TypeInferenceBuilder<'db, '_> {
-    fn implicit_alias_reference(
+    fn recursive_implicit_alias_reference(
         &mut self,
         value_ty: Type<'db>,
         definition: Option<Definition<'db>>,
@@ -109,20 +108,14 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             _ => return None,
         }
         let parameters = implicit_alias_parameters(db, definition);
-        let inference = infer_implicit_alias_type(db, definition, parameters);
-        // A runtime union can contain class-valued aliases whose annotation meaning requires
-        // their definitions, such as NumPy's scalar aliases. Keep a successful reinterpretation
-        // when interpreting the union's values alone was insufficient.
-        let recovered_union = matches!(value_ty, Type::KnownInstance(KnownInstanceType::UnionType(union)) if union.union_type(db).is_err())
-            && inference.diagnostics.is_empty();
-        let result = inference.ty;
+        let result = infer_implicit_alias_type(db, definition, parameters).ty;
         // Preserve cycle errors even when recovery removes every recursive reference. Both
         // runtime-value inference and enclosing aliases need the fallback type to converge.
         let ty = result.unwrap_or_else(|error| error.fallback_type);
         let is_recursive = any_over_type(db, self.program_environment(), ty, false, |ty| {
             matches!(ty, Type::Recursive(_))
         });
-        if result.is_ok() && !is_recursive && !recovered_union {
+        if result.is_ok() && !is_recursive {
             return None;
         }
 
@@ -268,12 +261,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
     ) -> Type<'db> {
         let db = self.db();
         let env = self.program_environment();
-        if let Some(alias) =
-            definition.and_then(|definition| numpy::scalar_class_alias(db, ty, definition))
-        {
-            return Type::instance(db, env, alias.into());
-        }
-        if let Some((alias, parameters)) = self.implicit_alias_reference(ty, definition) {
+        if let Some((alias, parameters)) = self.recursive_implicit_alias_reference(ty, definition) {
             return match parameters {
                 Some(parameters) => {
                     alias.apply_specialization(db, parameters.default_specialization(db, None))
@@ -1325,7 +1313,8 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
         value_ty: Type<'db>,
         definition: Option<Definition<'db>>,
     ) -> Type<'db> {
-        if let Some((alias, Some(parameters))) = self.implicit_alias_reference(value_ty, definition)
+        if let Some((alias, Some(parameters))) =
+            self.recursive_implicit_alias_reference(value_ty, definition)
         {
             let db = self.db();
             return self.infer_explicit_callable_specialization(
