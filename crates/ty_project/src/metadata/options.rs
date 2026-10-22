@@ -1462,6 +1462,10 @@ pub enum OutputFormat {
     /// Print diagnostics as a JUnit-style XML report.
     #[cfg(feature = "junit")]
     Junit,
+    /// Print diagnostics as a [SARIF] report.
+    ///
+    /// [SARIF]: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
+    Sarif,
 }
 
 impl OutputFormat {
@@ -1484,6 +1488,7 @@ impl From<OutputFormat> for DiagnosticFormat {
             OutputFormat::Github => Self::Github,
             #[cfg(feature = "junit")]
             OutputFormat::Junit => Self::Junit,
+            OutputFormat::Sarif => Self::Sarif,
         }
     }
 }

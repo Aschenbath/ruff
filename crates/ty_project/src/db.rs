@@ -11,7 +11,7 @@ use crate::uv::UvEnvironments;
 use crate::{ProgressReporter, Project, ProjectMetadata};
 use get_size2::StandardTracker;
 use ruff_db::Db as SourceDb;
-use ruff_db::diagnostic::Diagnostic;
+use ruff_db::diagnostic::{Diagnostic, LintName, RuleMetadata};
 use ruff_db::files::{File, Files};
 use ruff_db::system::{DbWithWritableSystem, System, SystemPath, WritableSystem};
 use ruff_db::vendored::VendoredFileSystem;
@@ -678,6 +678,10 @@ impl SourceDb for ProjectDatabase {
     fn files(&self) -> &Files {
         &self.files
     }
+
+    fn rule_metadata(&self, name: LintName) -> Option<RuleMetadata> {
+        self.lint_registry().rule_metadata(name)
+    }
 }
 
 #[salsa::db]
@@ -732,7 +736,7 @@ pub(crate) mod testing {
     use std::sync::{Arc, Mutex};
 
     use ruff_db::Db as SourceDb;
-    use ruff_db::diagnostic::Diagnostic;
+    use ruff_db::diagnostic::{Diagnostic, LintName, RuleMetadata};
     use ruff_db::files::{File, FileRootKind, Files};
     use ruff_db::system::{DbWithTestSystem, System, TestSystem};
     use ruff_db::vendored::VendoredFileSystem;
@@ -745,7 +749,7 @@ pub(crate) mod testing {
     use ty_python_semantic::ProgramEnvironment;
     use ty_python_semantic::dependency::DependencyMetadata;
     use ty_python_semantic::lint::{LintRegistry, RuleSelection};
-    use ty_python_semantic::{AnalysisSettings, PythonVersionWithSource};
+    use ty_python_semantic::{AnalysisSettings, Db as _, PythonVersionWithSource};
 
     use crate::db::Db;
     use crate::metadata::settings::file_settings;
@@ -863,6 +867,10 @@ pub(crate) mod testing {
 
         fn files(&self) -> &Files {
             &self.files
+        }
+
+        fn rule_metadata(&self, name: LintName) -> Option<RuleMetadata> {
+            self.lint_registry().rule_metadata(name)
         }
     }
 

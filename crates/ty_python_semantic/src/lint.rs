@@ -1,7 +1,7 @@
 use crate::diagnostic::did_you_mean;
 use core::fmt;
 use itertools::Itertools;
-use ruff_db::diagnostic::{DiagnosticId, LintName, Severity};
+use ruff_db::diagnostic::{DiagnosticId, LintName, RuleMetadata, Severity};
 use rustc_hash::FxHashMap;
 use std::error::Error;
 use std::fmt::Formatter;
@@ -479,6 +479,19 @@ impl LintRegistry {
             } else {
                 None
             }
+        })
+    }
+
+    /// Returns the metadata used to render a registered lint.
+    pub fn rule_metadata(&self, name: LintName) -> Option<RuleMetadata> {
+        let lint = self.get(name.as_str()).ok()?;
+
+        Some(RuleMetadata {
+            name: lint.name(),
+            summary: lint.summary.into(),
+            description: lint.documentation().into(),
+            help_url: lint.documentation_url(),
+            linter: None,
         })
     }
 }
