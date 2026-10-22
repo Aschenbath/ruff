@@ -1,20 +1,18 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::Write;
 
 use anyhow::Result;
-use log::warn;
 use serde::{Serialize, Serializer};
 
-use ruff_db::diagnostic::{Diagnostic, DisplayDiagnosticConfig, SecondaryCode, Severity};
-use ruff_source_file::{OneIndexed, SourceFile};
+use ruff_db::diagnostic::{
+    Diagnostic, DiagnosticContext, DisplayDiagnosticConfig, LintName, RuleMetadata, SecondaryCode,
+    Severity,
+};
+use ruff_source_file::{OneIndexed, SourceCode};
 use ruff_text_size::{Ranged, TextRange};
 
-use crate::VERSION;
-use crate::codes::Rule;
-use crate::fs::normalize_path;
 use crate::message::{Emitter, EmitterContext};
-use crate::registry::{Linter, RuleNamespace};
 
 /// An emitter for producing SARIF 2.1.0-compliant JSON output.
 ///
@@ -36,29 +34,48 @@ impl Emitter for SarifEmitter<'_> {
         &mut self,
         writer: &mut dyn Write,
         diagnostics: &[Diagnostic],
-        _context: &EmitterContext,
+        context: &EmitterContext,
     ) -> Result<()> {
+        SarifRenderer::new(context, self.config).render(writer, diagnostics)
+    }
+}
+
+pub(super) struct SarifRenderer<'a> {
+    resolver: &'a dyn DiagnosticContext,
+    config: &'a DisplayDiagnosticConfig,
+}
+
+impl<'a> SarifRenderer<'a> {
+    pub(super) fn new(
+        resolver: &'a dyn DiagnosticContext,
+        config: &'a DisplayDiagnosticConfig,
+    ) -> Self {
+        Self { resolver, config }
+    }
+
+    pub(super) fn render(&self, f: &mut dyn Write, diagnostics: &[Diagnostic]) -> Result<()> {
         let results = diagnostics
             .iter()
             .map(|diagnostic| SarifResult::from_message(diagnostic, self.config))
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
 
-        let unique_rules_and_severities: HashSet<_> = results
-            .iter()
-            .filter(|result| result.is_lint_rule)
-            // Here we implicitly assume that, for a fixed rule, all diagnostics
-            // have the same severity. If we ever introduce a way for users
-            // to locally change the severity of a diagnostic we will have to
-            // refactor in such a way that we know the _configured_ severity at
-            // this point (rather than just the severities of each diagnostic).
-            .map(|result| {
-                let code = result.rule_id.as_str();
-                (code, result.level)
-            })
-            .collect();
-        let mut rules: Vec<SarifRule> = unique_rules_and_severities
+        let mut unique_rules = HashMap::new();
+        for result in &results {
+            if let Some(name) = result.lint_name {
+                // A rule's severity can differ between files. Keep one descriptor per rule,
+                // using its highest reported severity; each result retains its own level.
+                unique_rules
+                    .entry((name, result.rule_id.as_str()))
+                    .and_modify(|level: &mut SarifLevel| *level = (*level).max(result.level))
+                    .or_insert(result.level);
+            }
+        }
+        let mut rules: Vec<SarifRule> = unique_rules
             .into_iter()
-            .map(SarifRule::from)
+            .filter_map(|((name, code), level)| {
+                let metadata = self.resolver.rule_metadata(name)?;
+                Some(SarifRule::new(code, level, metadata))
+            })
             .collect();
         rules.sort_by(|a, b| {
             a.properties
@@ -75,13 +92,14 @@ impl Emitter for SarifEmitter<'_> {
                         name: "ruff",
                         information_uri: "https://github.com/astral-sh/ruff",
                         rules,
-                        version: VERSION.to_string(),
+                        version: ruff_db::program_version()
+                            .expect("program version must be set before rendering SARIF"),
                     },
                 },
                 results: &results,
             }],
         };
-        serde_json::to_writer_pretty(writer, &output)?;
+        serde_json::to_writer_pretty(f, &output)?;
         Ok(())
     }
 }
@@ -111,7 +129,7 @@ struct SarifDriver<'a> {
     information_uri: &'static str,
     name: &'static str,
     rules: Vec<SarifRule<'a>>,
-    version: String,
+    version: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,40 +143,30 @@ struct SarifRule<'a> {
     short_description: SarifMessage<'a>,
 }
 
-impl<'a> From<(&'a str, SarifLevel)> for SarifRule<'a> {
-    fn from(code_and_level: (&'a str, SarifLevel)) -> Self {
-        let (code, level) = code_and_level;
-        // This is a manual re-implementation of Rule::from_code, but we also want the Linter. This
-        // avoids calling Linter::parse_code twice.
-        let (kind, rule) = match Linter::parse_code(code) {
-            Some((linter, suffix)) => {
-                let rule = linter
-                    .all_rules()
-                    .find(|rule| rule.noqa_code().is_some_and(|code| code.suffix() == suffix))
-                    .expect("Expected a valid noqa code corresponding to a rule");
-                (Some(linter.name()), rule)
-            }
-            None => {
-                let rule = Rule::from_name(code).expect("expected a valid rule name");
-                (None, rule)
-            }
-        };
+impl<'a> SarifRule<'a> {
+    fn new(code: &'a str, level: SarifLevel, metadata: RuleMetadata) -> Self {
         Self {
             id: code,
             short_description: SarifMessage {
-                text: rule.message_formats()[0].into(),
+                text: metadata.summary.clone(),
             },
             full_description: SarifMessage {
-                text: rule.explanation().into(),
+                text: metadata.description,
             },
             help: SarifMessage {
-                text: rule.message_formats()[0].into(),
+                text: metadata.summary,
             },
-            help_uri: rule.url(),
+            help_uri: metadata.help_url,
             properties: SarifProperties {
                 id: code,
-                kind,
-                name: rule.into(),
+                // Preserve the existing SARIF output when preview prefers rule names:
+                // omit the linter even if the rule also has a code.
+                kind: if code == metadata.name.as_str() {
+                    None
+                } else {
+                    metadata.linter
+                },
+                name: metadata.name.as_str(),
                 problem_severity: level,
             },
         }
@@ -216,7 +224,7 @@ struct SarifResult<'a> {
     message: SarifMessage<'a>,
     rule_id: RuleCode<'a>,
     #[serde(skip)]
-    is_lint_rule: bool,
+    lint_name: Option<LintName>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -278,7 +286,7 @@ struct InsertedContent {
     text: String,
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Default, Serialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 struct SarifRegion {
     end_column: OneIndexed,
@@ -315,8 +323,7 @@ impl From<Severity> for SarifLevel {
 }
 
 impl<'a> SarifResult<'a> {
-    fn range_to_sarif_region(source_file: &SourceFile, range: TextRange) -> SarifRegion {
-        let source_code = source_file.to_source_code();
+    fn range_to_sarif_region(source_code: &SourceCode, range: TextRange) -> SarifRegion {
         let start_location = source_code.line_column(range.start());
         let end_location = source_code.line_column(range.end());
 
@@ -328,22 +335,8 @@ impl<'a> SarifResult<'a> {
         }
     }
 
-    fn fix(diagnostic: &'a Diagnostic, uri: &str) -> Option<SarifFix> {
+    fn fix(diagnostic: &'a Diagnostic, uri: &str, source_code: &SourceCode) -> Option<SarifFix> {
         let fix = diagnostic.fix()?;
-
-        let Some(source_file) = diagnostic.ruff_source_file() else {
-            debug_assert!(
-                false,
-                "Omitting the fix for diagnostic with id `{}` because the source file is missing. This is a bug in Ruff, please report an issue.",
-                diagnostic.id()
-            );
-
-            warn!(
-                "Omitting the fix for diagnostic with id `{}` because the source file is missing. This is a bug in Ruff, please report an issue.",
-                diagnostic.id()
-            );
-            return None;
-        };
 
         let fix_description = diagnostic
             .first_help_text()
@@ -354,7 +347,7 @@ impl<'a> SarifResult<'a> {
             .iter()
             .map(|edit| {
                 let range = edit.range();
-                let deleted_region = Self::range_to_sarif_region(source_file, range);
+                let deleted_region = Self::range_to_sarif_region(source_code, range);
                 SarifReplacement {
                     deleted_region,
                     inserted_content: edit.content().map(|content| InsertedContent {
@@ -379,47 +372,47 @@ impl<'a> SarifResult<'a> {
         })
     }
 
-    #[allow(clippy::unnecessary_wraps)]
-    fn uri(diagnostic: &Diagnostic) -> Result<String> {
-        let path = normalize_path(&*diagnostic.expect_ruff_filename());
+    fn uri(path: &str) -> String {
         cfg_select! {
-            target_arch = "wasm32" => Ok(format!("file://{}", path.display())),
-            _ => url::Url::from_file_path(&path)
-                .map_err(|()| anyhow::anyhow!("Failed to convert path to URL: {}", path.display()))
-                .map(|url| url.to_string()),
+            target_arch = "wasm32" => format!("file://{path}"),
+            _ => url::Url::from_file_path(path)
+                .map_or_else(|()| format!("file://{path}"), |url| url.to_string()),
         }
     }
 
-    fn from_message(
-        diagnostic: &'a Diagnostic,
-        config: &'a DisplayDiagnosticConfig,
-    ) -> Result<Self> {
-        let start_location = diagnostic.ruff_start_location().unwrap_or_default();
-        let end_location = diagnostic.ruff_end_location().unwrap_or_default();
-        let region = SarifRegion {
-            start_line: start_location.line,
-            start_column: start_location.column,
-            end_line: end_location.line,
-            end_column: end_location.column,
-        };
+    fn from_message(diagnostic: &'a Diagnostic, config: &'a DisplayDiagnosticConfig) -> Self {
+        let (locations, fixes) = diagnostic
+            .ruff_source_file()
+            .map(|source| {
+                let uri = Self::uri(source.name());
+                let source_code = source.to_source_code();
+                let region = diagnostic
+                    .range()
+                    .map(|range| Self::range_to_sarif_region(&source_code, range))
+                    .unwrap_or_default();
+                let fixes = Self::fix(diagnostic, &uri, &source_code)
+                    .into_iter()
+                    .collect();
+                let locations = vec![SarifLocation {
+                    physical_location: SarifPhysicalLocation {
+                        artifact_location: SarifArtifactLocation { uri },
+                        region,
+                    },
+                }];
+                (locations, fixes)
+            })
+            .unwrap_or_default();
 
-        let uri = Self::uri(diagnostic)?;
-
-        Ok(Self {
+        Self {
             rule_id: RuleCode::from_diagnostic(diagnostic, config),
             level: SarifLevel::from(diagnostic.severity()),
             message: SarifMessage {
                 text: diagnostic.concise_message().to_str(),
             },
-            fixes: Self::fix(diagnostic, &uri).into_iter().collect(),
-            locations: vec![SarifLocation {
-                physical_location: SarifPhysicalLocation {
-                    artifact_location: SarifArtifactLocation { uri },
-                    region,
-                },
-            }],
-            is_lint_rule: diagnostic.id().is_lint(),
-        })
+            fixes,
+            locations,
+            lint_name: diagnostic.id().as_lint(),
+        }
     }
 }
 
@@ -433,6 +426,7 @@ mod tests {
     };
 
     fn get_output() -> String {
+        let _ = ruff_db::set_program_version("1.0.0".to_string());
         let config = DisplayDiagnosticConfig::new("ruff");
         let mut emitter = SarifEmitter::new(&config);
         capture_emitter_output(&mut emitter, &create_diagnostics())
@@ -446,6 +440,7 @@ mod tests {
 
     #[test]
     fn valid_syntax_error_json() {
+        let _ = ruff_db::set_program_version("1.0.0".to_string());
         let config = DisplayDiagnosticConfig::new("ruff");
         let mut emitter = SarifEmitter::new(&config);
         let content = capture_emitter_output(&mut emitter, &create_syntax_error_diagnostics());

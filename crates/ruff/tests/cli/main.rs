@@ -94,7 +94,13 @@ impl CliTest {
         );
         settings.add_filter(r#"\\([\w&&[^nr"]]\w|\s|\.)"#, "/$1");
         settings.add_filter(r"(Panicked at) [^:]+:\d+:\d+", "$1 <location>");
-        settings.add_filter(ruff_linter::VERSION, "[VERSION]");
+        settings.add_filter(
+            &format!(
+                r"{}(\+\d+)?( \(\w{{9}} \d\d\d\d-\d\d-\d\d\))?",
+                regex::escape(ruff_linter::VERSION),
+            ),
+            "[VERSION]",
+        );
         settings.add_filter(
             r#"The system cannot find the file specified."#,
             "No such file or directory",

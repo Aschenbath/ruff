@@ -19,7 +19,7 @@ use crate::{
 
 use super::{
     Annotation, Diagnostic, DiagnosticFormat, DiagnosticSource, DisplayDiagnosticConfig,
-    SubDiagnostic, UnifiedFile,
+    RuleMetadataProvider, SubDiagnostic, UnifiedFile,
 };
 
 use azure::AzureRenderer;
@@ -782,6 +782,11 @@ impl<'r> RenderableAnnotation<'r> {
         ann.hide_snippet(self.hide_snippet)
     }
 }
+
+/// Provides source files and rule metadata for diagnostic rendering.
+pub trait DiagnosticContext: FileResolver + RuleMetadataProvider {}
+
+impl<T: FileResolver + RuleMetadataProvider + ?Sized> DiagnosticContext for T {}
 
 /// A trait that facilitates the retrieval of source code from a `Span`.
 ///

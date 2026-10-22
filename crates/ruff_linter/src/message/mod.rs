@@ -8,8 +8,8 @@ use rustc_hash::FxHashMap;
 
 use ruff_db::diagnostic::{
     Annotation, Diagnostic, DiagnosticFormat, DiagnosticId, DisplayDiagnosticConfig,
-    DisplayDiagnostics, FileResolver, Input, LintName, SecondaryCode, Severity, Span,
-    SubDiagnostic, SubDiagnosticSeverity, UnifiedFile,
+    DisplayDiagnostics, FileResolver, Input, LintName, RuleMetadata, RuleMetadataProvider,
+    SecondaryCode, Severity, Span, SubDiagnostic, SubDiagnosticSeverity, UnifiedFile,
 };
 use ruff_db::files::File;
 
@@ -20,7 +20,7 @@ use ruff_text_size::{TextRange, TextSize};
 pub(crate) use sarif::SarifEmitter;
 
 use crate::Fix;
-use crate::registry::Rule;
+use crate::registry::{Linter, Rule, RuleNamespace};
 use crate::settings::types::{OutputFormat, RuffOutputFormat};
 
 mod grouped;
@@ -162,6 +162,23 @@ impl FileResolver for EmitterContext<'_> {
 
     fn current_directory(&self) -> &std::path::Path {
         crate::fs::get_cwd()
+    }
+}
+
+impl RuleMetadataProvider for EmitterContext<'_> {
+    fn rule_metadata(&self, name: LintName) -> Option<RuleMetadata> {
+        let rule = Rule::from_name(name.as_str()).ok()?;
+        let linter = rule.noqa_code().and_then(|code| {
+            Linter::parse_code(&code.to_string()).map(|(linter, _)| linter.name())
+        });
+
+        Some(RuleMetadata {
+            name: LintName::of(rule.into()),
+            summary: rule.message_formats()[0].into(),
+            description: rule.explanation().into(),
+            help_url: rule.url(),
+            linter,
+        })
     }
 }
 

@@ -10,7 +10,8 @@ use ruff_text_size::{Ranged, TextRange, TextSize};
 use serde::Serialize;
 
 pub use self::render::{
-    DisplayDiagnostic, DisplayDiagnostics, DummyFileResolver, FileResolver, Input,
+    DiagnosticContext, DisplayDiagnostic, DisplayDiagnostics, DummyFileResolver, FileResolver,
+    Input,
 };
 pub use self::stylesheet::{DiagnosticStylesheet, fmt_with_hyperlink};
 use crate::cancellation::CancellationToken;
@@ -1415,6 +1416,30 @@ pub enum HyperlinkMode {
     Always,
     /// Never emit hyperlinks.
     Never,
+}
+
+/// Descriptive information about a lint rule, independent of any particular diagnostic.
+#[derive(Clone, Debug)]
+pub struct RuleMetadata {
+    /// The canonical name of the rule.
+    pub name: LintName,
+    /// A short description of what the rule detects.
+    pub summary: Cow<'static, str>,
+    /// The rule's full documentation.
+    pub description: Cow<'static, str>,
+    /// The URL of the rule's documentation.
+    pub help_url: String,
+    /// The linter that defines the rule, if applicable.
+    pub linter: Option<&'static str>,
+}
+
+/// Provides rule metadata for diagnostic rendering.
+pub trait RuleMetadataProvider {
+    /// Returns metadata for a lint, if available.
+    ///
+    /// When metadata is unavailable, SARIF omits the rule descriptor while retaining
+    /// the diagnostic results.
+    fn rule_metadata(&self, name: LintName) -> Option<RuleMetadata>;
 }
 
 /// Configuration for rendering diagnostics.
