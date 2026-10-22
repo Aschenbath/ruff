@@ -18,8 +18,8 @@ use crate::{
 };
 
 use super::{
-    Annotation, Diagnostic, DiagnosticFormat, DiagnosticSource, DisplayDiagnosticConfig,
-    RuleMetadataProvider, SubDiagnostic, UnifiedFile,
+    Annotation, Diagnostic, DiagnosticFormat, DiagnosticSource, DisplayDiagnosticConfig, LintName,
+    RuleMetadata, RuleMetadataProvider, SubDiagnostic, UnifiedFile,
 };
 
 use azure::AzureRenderer;
@@ -42,6 +42,8 @@ mod junit;
 mod pylint;
 #[cfg(feature = "serde")]
 mod rdjson;
+#[cfg(feature = "serde")]
+mod sarif;
 
 /// A type that implements `std::fmt::Display` for diagnostic rendering.
 ///
@@ -56,13 +58,13 @@ mod rdjson;
 /// * The lifetime of the diagnostic being rendered.
 pub struct DisplayDiagnostic<'a> {
     config: &'a DisplayDiagnosticConfig,
-    resolver: &'a dyn FileResolver,
+    resolver: &'a dyn DiagnosticContext,
     diag: &'a Diagnostic,
 }
 
 impl<'a> DisplayDiagnostic<'a> {
     pub(crate) fn new(
-        resolver: &'a dyn FileResolver,
+        resolver: &'a dyn DiagnosticContext,
         config: &'a DisplayDiagnosticConfig,
         diag: &'a Diagnostic,
     ) -> DisplayDiagnostic<'a> {
@@ -89,13 +91,13 @@ impl std::fmt::Display for DisplayDiagnostic<'_> {
 /// constraints.
 pub struct DisplayDiagnostics<'a> {
     config: &'a DisplayDiagnosticConfig,
-    resolver: &'a dyn FileResolver,
+    resolver: &'a dyn DiagnosticContext,
     diagnostics: &'a [Diagnostic],
 }
 
 impl<'a> DisplayDiagnostics<'a> {
     pub fn new(
-        resolver: &'a dyn FileResolver,
+        resolver: &'a dyn DiagnosticContext,
         config: &'a DisplayDiagnosticConfig,
         diagnostics: &'a [Diagnostic],
     ) -> DisplayDiagnostics<'a> {
@@ -148,6 +150,11 @@ impl std::fmt::Display for DisplayDiagnostics<'_> {
             }
             DiagnosticFormat::Github => {
                 GithubRenderer::new(self.resolver, self.config).render(f, self.diagnostics)?;
+            }
+            #[cfg(feature = "serde")]
+            DiagnosticFormat::Sarif => {
+                sarif::SarifRenderer::new(self.resolver, self.config)
+                    .render(f, self.diagnostics)?;
             }
         }
 
@@ -859,6 +866,12 @@ where
     }
 }
 
+impl<T: Db> RuleMetadataProvider for T {
+    fn rule_metadata(&self, name: LintName) -> Option<RuleMetadata> {
+        Db::rule_metadata(self, name)
+    }
+}
+
 impl FileResolver for &dyn Db {
     fn path(&self, file: File) -> &str {
         file.path(*self).as_str()
@@ -892,6 +905,12 @@ impl FileResolver for &dyn Db {
 
     fn current_directory(&self) -> &Path {
         self.system().current_directory().as_std_path()
+    }
+}
+
+impl RuleMetadataProvider for &dyn Db {
+    fn rule_metadata(&self, name: LintName) -> Option<RuleMetadata> {
+        Db::rule_metadata(*self, name)
     }
 }
 
@@ -1126,6 +1145,12 @@ impl FileResolver for DummyFileResolver {
 
     fn current_directory(&self) -> &Path {
         Path::new(".")
+    }
+}
+
+impl RuleMetadataProvider for DummyFileResolver {
+    fn rule_metadata(&self, _name: LintName) -> Option<RuleMetadata> {
+        None
     }
 }
 
@@ -2554,6 +2579,7 @@ watermelon
         ///
         /// This uses the default diagnostic rendering configuration.
         pub(super) fn new() -> TestEnvironment {
+            let _ = crate::set_program_version("1.0.0".to_string());
             let mut env = TestEnvironment {
                 db: TestDb::new(),
                 config: DisplayDiagnosticConfig::new("ty"),

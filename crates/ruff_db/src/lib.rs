@@ -3,6 +3,7 @@
     reason = "Prefer System trait methods over std methods"
 )]
 
+use crate::diagnostic::{LintName, RuleMetadata};
 use crate::files::{File, Files};
 use crate::system::System;
 use crate::vendored::VendoredFileSystem;
@@ -77,6 +78,11 @@ pub trait Db: salsa::Database {
     fn vendored(&self) -> &VendoredFileSystem;
     fn system(&self) -> &dyn System;
     fn files(&self) -> &Files;
+
+    /// Returns metadata for a lint, if available, for diagnostic rendering.
+    fn rule_metadata(&self, _name: LintName) -> Option<RuleMetadata> {
+        None
+    }
 }
 
 /// Returns the maximum number of tasks that ty is allowed
@@ -125,6 +131,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::Db;
+    use crate::diagnostic::{LintName, RuleMetadata};
     use crate::files::Files;
     use crate::system::TestSystem;
     use crate::system::{DbWithTestSystem, System};
@@ -194,6 +201,16 @@ mod tests {
 
         fn files(&self) -> &Files {
             &self.files
+        }
+
+        fn rule_metadata(&self, name: LintName) -> Option<RuleMetadata> {
+            Some(RuleMetadata {
+                name,
+                summary: name.as_str().into(),
+                description: format!("Documentation for `{name}`.").into(),
+                help_url: format!("https://ty.dev/rules#{name}"),
+                linter: Some("example"),
+            })
         }
     }
 

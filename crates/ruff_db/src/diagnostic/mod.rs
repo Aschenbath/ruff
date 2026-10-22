@@ -213,7 +213,7 @@ impl Diagnostic {
     /// callers should prefer using this with `write!` instead of `writeln!`.
     pub fn display<'a>(
         &'a self,
-        resolver: &'a dyn FileResolver,
+        resolver: &'a dyn DiagnosticContext,
         config: &'a DisplayDiagnosticConfig,
     ) -> DisplayDiagnostic<'a> {
         DisplayDiagnostic::new(resolver, config, self)
@@ -1692,6 +1692,12 @@ pub enum DiagnosticFormat {
     ///
     /// [GitHub Actions]: https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#setting-an-error-message
     Github,
+
+    /// Print diagnostics in the [SARIF] JSON format.
+    ///
+    /// [SARIF]: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
+    #[cfg(feature = "serde")]
+    Sarif,
 }
 
 /// A representation of the kinds of messages inside a diagnostic.
