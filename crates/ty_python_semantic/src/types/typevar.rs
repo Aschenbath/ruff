@@ -1061,6 +1061,7 @@ impl<'db> BoundTypeVarInstance<'db> {
             binding_context,
             paramspec_attr,
             freshness,
+            scope: None,
         };
         Self::new_internal(db, typevar, identity)
     }
@@ -1246,6 +1247,15 @@ impl<'db> BoundTypeVarInstance<'db> {
             None,
             TypeVarNonce::NONE,
         )
+    }
+
+    pub(crate) fn resolve(self, db: &'db dyn Db, scope: TypeVarScope<'db>) -> Self {
+        let identity = self.identity(db).resolve(db, scope);
+        Self::new_internal(db, self.typevar(db), identity)
+    }
+
+    pub(crate) fn is_resolved(self, db: &'db dyn Db) -> bool {
+        self.identity(db).scope.is_some()
     }
 
     /// Create a synthetic `Self` type variable with the given origin and upper bound.
@@ -1478,6 +1488,7 @@ impl<'db> BoundTypeVarInstance<'db> {
                     ))
                 }
             }
+            TypeMapping::ResolveTypeVars(scope) => Type::TypeVar(self.resolve(db, *scope)),
             TypeMapping::Promote(..)
             | TypeMapping::ReplaceParameterDefaults
             | TypeMapping::BindLegacyTypevars(_)
@@ -1886,6 +1897,26 @@ impl std::fmt::Display for ParamSpecAttrKind {
     }
 }
 
+#[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
+pub struct TypeVarScope<'db> {
+    #[returns(copy)]
+    kind: TypeVarScopeKind,
+    #[returns(copy)]
+    generic_context: GenericContext<'db>,
+    #[returns(copy)]
+    parent: Option<TypeVarScope<'db>>,
+}
+
+// The Salsa heap is tracked separately.
+impl get_size2::GetSize for TypeVarScope<'_> {}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, get_size2::GetSize, salsa::SalsaValue)]
+pub enum TypeVarScopeKind {
+    NonInferable,
+    Inferable,
+    Quantified,
+}
+
 /// The identity of a bound type variable occurrence.
 ///
 /// This identifies a specific binding of a typevar to a context (e.g., `T@ClassC` vs `T@FunctionF`),
@@ -1902,6 +1933,7 @@ pub struct BoundTypeVarIdentity<'db> {
     pub(super) paramspec_attr: Option<ParamSpecAttrKind>,
     /// The freshness nonce for this bound typevar occurrence; `0` is the source-level occurrence.
     freshness: TypeVarNonce,
+    scope: Option<TypeVarScope<'db>>,
 }
 
 impl<'db> BoundTypeVarIdentity<'db> {
@@ -1922,6 +1954,21 @@ impl<'db> BoundTypeVarIdentity<'db> {
 
         self.paramspec_attr = None;
         self
+    }
+
+    fn resolve(self, db: &'db dyn Db, mut scope: TypeVarScope<'db>) -> Self {
+        loop {
+            if scope.generic_context(db).contains(db, self) {
+                return Self {
+                    scope: Some(scope),
+                    ..self
+                };
+            }
+            let Some(parent) = scope.parent(db) else {
+                panic!("should find containing scope for {}", self.display(db));
+            };
+            scope = parent;
+        }
     }
 }
 
