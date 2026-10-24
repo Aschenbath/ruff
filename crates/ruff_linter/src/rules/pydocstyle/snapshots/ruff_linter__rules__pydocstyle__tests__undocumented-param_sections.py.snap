@@ -110,3 +110,11 @@ D417 Missing argument description in the docstring for `test_incorrect_indent`: 
     |         ^^^^^^^^^^^^^^^^^^^^^
 499 |         """Reproducing issue #437.
     |
+
+D417 Missing argument description in the docstring for `nested_example_with_undocumented_parameter`: `z`
+   --> sections.py:669:5
+    |
+669 | def nested_example_with_undocumented_parameter(x, y, z):
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+670 |     """Only the third parameter lacks a description.
+    |

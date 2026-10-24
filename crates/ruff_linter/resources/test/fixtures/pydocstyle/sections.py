@@ -630,3 +630,51 @@ def another_valid_google_style_docstring(a: str) -> str:
 
     """
     return a
+
+
+def nested_example_in_parameter_description(x, y):
+    """Document both parameters, including an example for the first.
+
+    Args:
+        x: The first value.
+
+            Example:
+
+            .. code-block:: python
+
+                print(x)
+
+        y: The second value.
+
+    """
+
+
+def nested_notes_in_parameter_description(x, y):
+    """Keep nested notes inside the parameter description.
+
+    Args:
+        x: The first value.
+
+            Notes:
+                This value is optional.
+
+        y: The second value.
+
+    Returns:
+        The result.
+
+    """
+
+
+def nested_example_with_undocumented_parameter(x, y, z):
+    """Only the third parameter lacks a description.
+
+    Args:
+        x: The first value.
+
+            Example:
+                A sample value.
+
+        y: The second value.
+
+    """

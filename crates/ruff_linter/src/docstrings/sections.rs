@@ -191,7 +191,7 @@ impl<'a> SectionContexts<'a> {
                     last.as_ref(),
                     previous_line.as_ref(),
                     lines.peek(),
-                    docstring.definition,
+                    docstring,
                 ) {
                     if let Some(mut last) = last.take() {
                         last.range = TextRange::new(last.start(), line.start());
@@ -450,7 +450,7 @@ fn is_docstring_section(
     previous_section: Option<&SectionContextData>,
     previous_line: Option<&Line>,
     next_line: Option<&Line>,
-    definition: &Definition<'_>,
+    docstring: &Docstring<'_>,
 ) -> bool {
     // for function definitions, track the known argument names for more accurate section detection.
     // Determine whether the current line looks like a section header, e.g., "Args:".
@@ -506,8 +506,8 @@ fn is_docstring_section(
     //         The arguments to the function.
     //     """
     // ```
-    // However, if the header is an _exact_ match (like `Returns:`, as opposed to `returns:`), then
-    // continue to treat it as a section header.
+    // However, an _exact_ match (like `Returns:`, as opposed to `returns:`) can still be an
+    // overindented section header, unless it is nested within the section's content.
     if let Some(previous_section) = previous_section {
         let verbatim = &line[TextRange::at(indent_size, section_name_size)];
 
@@ -532,8 +532,21 @@ fn is_docstring_section(
         //     """
         // ```
         if previous_section.indent_size < indent_size {
+            // A heading within a parameter description, such as `Example:` in an `Args:`
+            // entry, must not end the argument list. Use the first non-blank content line
+            // to distinguish nested headings from overindented section headers.
+            let body = &docstring.body().as_str()
+                [TextRange::new(previous_section.summary_full_end, line.start())];
+            if body
+                .universal_newlines()
+                .find(|line| !line.trim().is_empty())
+                .is_some_and(|line| leading_space(&line).text_len() < indent_size)
+            {
+                return false;
+            }
+
             let section_name = section_kind.as_str();
-            if section_name != verbatim || has_parameter(definition, section_name) {
+            if section_name != verbatim || has_parameter(docstring.definition, section_name) {
                 return false;
             }
         }
